@@ -1,43 +1,16 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
-const api = {
+contextBridge.exposeInMainWorld("codexProfileManager", {
   getAppInfo: () => ipcRenderer.invoke("app:get-info"),
-  getAnnouncement: () => ipcRenderer.invoke("app:get-announcement"),
-  dismissAnnouncement: (id) => ipcRenderer.invoke("app:dismiss-announcement", id),
-  trackAnnouncementClick: (id) => ipcRenderer.invoke("app:track-announcement-click", id),
-  checkForUpdates: () => ipcRenderer.invoke("app:check-for-updates"),
-  downloadUpdate: () => ipcRenderer.invoke("app:download-update"),
-  installUpdate: () => ipcRenderer.invoke("app:install-update"),
-  onUpdateEvent: (listener) => {
-    const wrappedListener = (_event, payload) => listener(payload);
-    ipcRenderer.on("app:update-event", wrappedListener);
-    return () => ipcRenderer.removeListener("app:update-event", wrappedListener);
-  },
-  openExternalUrl: (url) => ipcRenderer.invoke("shell:open-external", url),
-  getEnvironmentReport: () => ipcRenderer.invoke("environment:get"),
-  getDiagnosticsReport: () => ipcRenderer.invoke("diagnostics:get"),
+  getBrowserLinkStatus: () => ipcRenderer.invoke("browser-links:status"),
+  enableBrowserLinks: () => ipcRenderer.invoke("browser-links:enable"),
+  getEnvironmentReport: (codexAppPath) => ipcRenderer.invoke("environment:get", codexAppPath),
   pickCodexAppPath: () => ipcRenderer.invoke("dialog:pick-codex-app-path"),
-  pickLauncherDirectory: () => ipcRenderer.invoke("dialog:pick-launcher-directory"),
-  revealPath: (path) => ipcRenderer.invoke("shell:reveal-path", path),
-  listProfiles: (includeDeleted) => ipcRenderer.invoke("profiles:list", includeDeleted),
-  listConfigBackups: (profileId) => ipcRenderer.invoke("profiles:backups", profileId),
-  restoreConfigBackup: (input) => ipcRenderer.invoke("profiles:restore-backup", input),
+  listProfiles: () => ipcRenderer.invoke("profiles:list"),
   getRuntimeStatus: () => ipcRenderer.invoke("profiles:runtime"),
-  testProvider: (input) => ipcRenderer.invoke("provider:test", input),
-  testProfileProvider: (input) => ipcRenderer.invoke("profiles:test-provider", input),
-  listProviderModels: (input) => ipcRenderer.invoke("provider:models", input),
-  listProfileProviderModels: (input) => ipcRenderer.invoke("profiles:models", input),
-  startSubscriptionAuthorization: (input) => ipcRenderer.invoke("subscription-auth:start", input),
-  pollSubscriptionAuthorization: (sessionId) => ipcRenderer.invoke("subscription-auth:poll", sessionId),
-  cancelSubscriptionAuthorization: (sessionId) => ipcRenderer.invoke("subscription-auth:cancel", sessionId),
   createProfile: (input) => ipcRenderer.invoke("profiles:create", input),
-  updateProfile: (input) => ipcRenderer.invoke("profiles:update", input),
-  reauthorizeSubscriptionProfile: (input) => ipcRenderer.invoke("profiles:reauthorize-subscription", input),
-  deleteProfile: (profileId) => ipcRenderer.invoke("profiles:delete", profileId),
   permanentlyDeleteProfile: (profileId) => ipcRenderer.invoke("profiles:delete-permanently", profileId),
-  restoreProfile: (profileId) => ipcRenderer.invoke("profiles:restore", profileId),
   generateLauncher: (profileId) => ipcRenderer.invoke("profiles:generate-launcher", profileId),
+  revealLauncher: (profileId) => ipcRenderer.invoke("profiles:reveal-launcher", profileId),
   openProfile: (profileId) => ipcRenderer.invoke("profiles:open", profileId)
-};
-
-contextBridge.exposeInMainWorld("codexProfileManager", api);
+});

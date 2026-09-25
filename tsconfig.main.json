@@ -7,5 +7,5 @@
     "moduleResolution": "NodeNext",
     "types": ["node", "electron"]
   },
-  "include": ["src/main/**/*.ts", "src/preload/**/*.ts"]
+  "include": ["src/main/index.ts", "src/preload/index.ts"]
 }

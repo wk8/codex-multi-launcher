@@ -1,9 +1,5 @@
-appId: local.codex.multiopen.helper
-productName: Codex 多开助手
-publish:
-  provider: github
-  owner: JqyModi
-  repo: codex-multi-launcher
+appId: local.wk.codex-personal-launcher
+productName: Codex Personal Launcher
 directories:
   output: dist-app
 files:
@@ -12,29 +8,16 @@ files:
   - assets/**/*
   - package.json
 mac:
-  icon: build/icon.icns
-  artifactName: codex-profile-manager-${version}-${arch}-mac.${ext}
+  icon: assets/app.icns
+  artifactName: codex-personal-launcher-${version}-${arch}-mac.${ext}
   target:
-    - zip
     - dir
   category: public.app-category.developer-tools
-  hardenedRuntime: true
-  gatekeeperAssess: false
-  entitlements: config/entitlements.mac.plist
-  entitlementsInherit: config/entitlements.mac.plist
-  notarize: true
-win:
-  icon: docs/landing/assets/app-icon.png
-  executableName: Codex Profile Manager
-  signAndEditExecutable: false
-  target:
-    - nsis
-    - portable
-nsis:
-  artifactName: Codex-Profile-Manager-Setup-${version}-${arch}.${ext}
-  oneClick: false
-  perMachine: false
-  allowToChangeInstallationDirectory: true
-portable:
-  artifactName: Codex-Profile-Manager-Portable-${version}-${arch}.${ext}
+  identity: null
+  hardenedRuntime: false
+  notarize: false
+protocols:
+  - name: Codex browser links
+    schemes:
+      - codex
 asar: true

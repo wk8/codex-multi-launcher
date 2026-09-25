@@ -1,8 +1,7 @@
 import path from "node:path";
-import { ensureDir, readJsonFile, writeJsonFile } from "./fs-utils.js";
-import { getAppPaths, isWindowsCodexGuiExecutable, launcherFileName, resolveCodexDesktopApp, slugifyProfileName } from "./paths.js";
-import { pathExists } from "./fs-utils.js";
-import type { CreateProfileInput, ManagedProfile, ProfileRegistry, UpdateProfileInput } from "../shared/types.js";
+import { ensureDir, pathExists, readJsonFile, writeJsonFile } from "./fs-utils.js";
+import { getAppPaths, launcherFileName, resolveCodexDesktopApp, slugifyProfileName } from "./paths.js";
+import type { CreateProfileInput, ManagedProfile, ProfileRegistry } from "../shared/types.js";
 
 export const DEFAULT_PROFILE_ICON_BACKGROUND_COLOR = "#34C759";
 
@@ -11,20 +10,9 @@ const EMPTY_REGISTRY: ProfileRegistry = {
   profiles: []
 };
 
-export async function loadRegistry(): Promise<ProfileRegistry> {
-  const appPaths = getAppPaths();
-  return readJsonFile<ProfileRegistry>(appPaths.profilesFile, EMPTY_REGISTRY);
-}
-
-export async function saveRegistry(registry: ProfileRegistry): Promise<void> {
-  const appPaths = getAppPaths();
-  await writeJsonFile(appPaths.profilesFile, registry);
-}
-
-export async function listProfiles(includeDeleted = false): Promise<ManagedProfile[]> {
+export async function listProfiles(): Promise<ManagedProfile[]> {
   const registry = await loadRegistry();
-  registry.profiles = registry.profiles.map(normalizeProfile);
-  return includeDeleted ? registry.profiles : registry.profiles.filter((profile) => profile.status !== "deleted");
+  return registry.profiles.filter((profile) => profile.status === "active").map(normalizeProfile);
 }
 
 export async function findProfile(profileId: string): Promise<ManagedProfile | null> {
@@ -34,50 +22,38 @@ export async function findProfile(profileId: string): Promise<ManagedProfile | n
 }
 
 export async function createProfileRecord(input: CreateProfileInput): Promise<ManagedProfile> {
+  const name = normalizeProfileName(input.name);
   const appPaths = getAppPaths();
   const registry = await loadRegistry();
-  const baseSlug = slugifyProfileName(input.name);
   const existingIds = new Set(registry.profiles.map((profile) => profile.id));
+  const baseSlug = slugifyProfileName(name);
   let id = baseSlug;
   let suffix = 2;
 
-  while (existingIds.has(id)) {
+  while (existingIds.has(id) || await profileTargetsExist(id)) {
     id = `${baseSlug}-${suffix}`;
     suffix += 1;
   }
 
-  const now = new Date().toISOString();
-  const codexHome = path.join(appPaths.defaultProfileRoot, id, "codex-home");
+  const homeDir = path.join(appPaths.defaultProfileRoot, id);
+  const codexHome = path.join(homeDir, "codex-home");
   const userDataDir = path.join(appPaths.defaultUserDataRoot, id, "user-data");
-  const launcherDirectory = input.launcherDirectory ?? appPaths.defaultLauncherRoot;
-  const launcherPath = path.join(launcherDirectory, launcherFileName(input.name));
+  const launcherPath = path.join(appPaths.defaultLauncherRoot, launcherFileName(id));
   const desktopApp = resolveCodexDesktopApp(input.codexAppPath);
-  const providerId = input.provider.type === "official_openai" ? "openai" : "proxy";
-  const envKeyName = input.provider.type === "official_openai"
-    ? "OPENAI_API_KEY"
-    : `CODEX_PROFILE_${id.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`;
+  const now = new Date().toISOString();
   const profile: ManagedProfile = {
     id,
-    name: input.name,
+    name,
     status: "active",
     paths: {
       codexAppPath: desktopApp.appPath,
+      homeDir,
       codexHome,
       userDataDir,
       launcherPath
     },
-    provider: {
-      type: input.provider.type,
-      id: providerId,
-      displayName: input.provider.displayName,
-      baseUrl: input.provider.baseUrl,
-      wireApi: "responses",
-      envKeyName,
-      model: input.provider.model,
-      reasoningEffort: input.provider.reasoningEffort ?? "medium"
-    },
     auth: {
-      mode: input.authMode ?? "api_key"
+      mode: "chatgpt_account"
     },
     appearance: {
       iconBackgroundColor: normalizeHexColor(input.appearance?.iconBackgroundColor)
@@ -93,103 +69,44 @@ export async function createProfileRecord(input: CreateProfileInput): Promise<Ma
     }
   };
 
-  await Promise.all([ensureDir(codexHome), ensureDir(userDataDir), ensureDir(launcherDirectory)]);
-
+  await Promise.all([
+    ensureDir(codexHome),
+    ensureDir(userDataDir),
+    ensureDir(appPaths.defaultLauncherRoot)
+  ]);
   registry.profiles.push(profile);
   await saveRegistry(registry);
-
   return profile;
-}
-
-export async function softDeleteProfile(profileId: string): Promise<void> {
-  const registry = await loadRegistry();
-  const profile = registry.profiles.find((item) => item.id === profileId);
-  if (!profile) {
-    throw new Error(`Profile not found: ${profileId}`);
-  }
-
-  profile.status = "deleted";
-  profile.timestamps.updatedAt = new Date().toISOString();
-  await saveRegistry(registry);
-}
-
-export async function restoreProfileRecord(profileId: string): Promise<void> {
-  const registry = await loadRegistry();
-  const profile = registry.profiles.find((item) => item.id === profileId);
-  if (!profile) {
-    throw new Error(`Profile not found: ${profileId}`);
-  }
-
-  profile.status = "active";
-  profile.timestamps.updatedAt = new Date().toISOString();
-  await saveRegistry(registry);
 }
 
 export async function removeProfileRecord(profileId: string): Promise<ManagedProfile> {
   const registry = await loadRegistry();
   const profile = registry.profiles.find((item) => item.id === profileId);
-  if (!profile) {
-    throw new Error(`Profile not found: ${profileId}`);
-  }
-
+  if (!profile) throw new Error(`Profile not found: ${profileId}`);
   registry.profiles = registry.profiles.filter((item) => item.id !== profileId);
   await saveRegistry(registry);
-  return profile;
-}
-
-export async function updateProfileRecord(input: UpdateProfileInput): Promise<ManagedProfile> {
-  const registry = await loadRegistry();
-  const profile = registry.profiles.find((item) => item.id === input.profileId);
-  if (!profile) {
-    throw new Error(`Profile not found: ${input.profileId}`);
-  }
-
-  profile.provider.displayName = input.provider.displayName;
-  profile.provider.baseUrl = input.provider.baseUrl;
-  profile.provider.model = input.provider.model;
-  profile.provider.reasoningEffort = input.provider.reasoningEffort ?? profile.provider.reasoningEffort;
-  profile.appearance = {
-    ...normalizeProfile(profile).appearance,
-    ...(input.appearance?.iconBackgroundColor ? { iconBackgroundColor: normalizeHexColor(input.appearance.iconBackgroundColor) } : {})
-  };
-  profile.timestamps.updatedAt = new Date().toISOString();
-  await saveRegistry(registry);
-  return profile;
-}
-
-export async function updateProfileCodexAppPath(profileId: string, codexAppPath: string): Promise<ManagedProfile> {
-  const registry = await loadRegistry();
-  const profile = registry.profiles.find((item) => item.id === profileId);
-  if (!profile) {
-    throw new Error(`Profile not found: ${profileId}`);
-  }
-
-  profile.paths.codexAppPath = codexAppPath;
-  profile.timestamps.updatedAt = new Date().toISOString();
-  await saveRegistry(registry);
-  return profile;
+  return normalizeProfile(profile);
 }
 
 export async function repairProfileCodexAppPath(profile: ManagedProfile): Promise<ManagedProfile> {
-  const resolvedDesktopApp = resolveCodexDesktopApp(profile.paths.codexAppPath);
-  if (resolvedDesktopApp.source === "preferred" && await pathExists(resolvedDesktopApp.executablePath) && isWindowsCodexGuiExecutable(resolvedDesktopApp.executablePath)) {
+  const resolved = resolveCodexDesktopApp(profile.paths.codexAppPath);
+  if (resolved.source !== "auto-detected" || resolved.appPath === profile.paths.codexAppPath) {
     return profile;
   }
 
-  if (resolvedDesktopApp.source === "auto-detected" && resolvedDesktopApp.appPath !== profile.paths.codexAppPath && await pathExists(resolvedDesktopApp.executablePath) && isWindowsCodexGuiExecutable(resolvedDesktopApp.executablePath)) {
-    return updateProfileCodexAppPath(profile.id, resolvedDesktopApp.appPath);
-  }
-
-  return profile;
+  const registry = await loadRegistry();
+  const stored = registry.profiles.find((item) => item.id === profile.id);
+  if (!stored) throw new Error(`Profile not found: ${profile.id}`);
+  stored.paths.codexAppPath = resolved.appPath;
+  stored.timestamps.updatedAt = new Date().toISOString();
+  await saveRegistry(registry);
+  return normalizeProfile(stored);
 }
 
 export async function updateProfileLaunchMetadata(profileId: string, pid: number | null): Promise<void> {
   const registry = await loadRegistry();
   const profile = registry.profiles.find((item) => item.id === profileId);
-  if (!profile) {
-    throw new Error(`Profile not found: ${profileId}`);
-  }
-
+  if (!profile) throw new Error(`Profile not found: ${profileId}`);
   profile.launch.lastLaunchedAt = new Date().toISOString();
   profile.launch.lastKnownPid = pid;
   profile.launch.lastKnownUserDataDir = profile.paths.userDataDir;
@@ -197,31 +114,52 @@ export async function updateProfileLaunchMetadata(profileId: string, pid: number
   await saveRegistry(registry);
 }
 
+async function loadRegistry(): Promise<ProfileRegistry> {
+  return readJsonFile<ProfileRegistry>(getAppPaths().profilesFile, EMPTY_REGISTRY);
+}
+
+async function saveRegistry(registry: ProfileRegistry): Promise<void> {
+  await writeJsonFile(getAppPaths().profilesFile, registry);
+}
+
+async function profileTargetsExist(id: string): Promise<boolean> {
+  const appPaths = getAppPaths();
+  const targets = [
+    path.join(appPaths.defaultProfileRoot, id),
+    path.join(appPaths.defaultUserDataRoot, id),
+    path.join(appPaths.defaultLauncherRoot, launcherFileName(id))
+  ];
+  return (await Promise.all(targets.map(pathExists))).some(Boolean);
+}
+
+function normalizeProfileName(value: string): string {
+  const name = value.trim();
+  if (!name) throw new Error("Profile name is required.");
+  if (name.length > 64) throw new Error("Profile name must be 64 characters or fewer.");
+  return name;
+}
+
 function normalizeProfile(profile: ManagedProfile): ManagedProfile {
-  profile.auth = {
-    mode: profile.auth?.mode ?? "api_key"
+  const homeDir = profile.paths.homeDir?.trim() || path.dirname(profile.paths.codexHome);
+  return {
+    ...profile,
+    paths: {
+      ...profile.paths,
+      homeDir
+    },
+    auth: { mode: "chatgpt_account" },
+    appearance: {
+      iconBackgroundColor: normalizeHexColor(profile.appearance?.iconBackgroundColor)
+    }
   };
-  profile.appearance = {
-    iconBackgroundColor: normalizeHexColor(profile.appearance?.iconBackgroundColor)
-  };
-  return profile;
 }
 
 function normalizeHexColor(value: string | undefined): string {
-  if (!value) {
-    return DEFAULT_PROFILE_ICON_BACKGROUND_COLOR;
+  const color = value?.trim();
+  const short = color?.match(/^#?([0-9a-fA-F]{3})$/);
+  if (short) {
+    return `#${short[1].split("").map((character) => character.repeat(2)).join("").toUpperCase()}`;
   }
-
-  const trimmed = value.trim();
-  const shortHexMatch = trimmed.match(/^#?([0-9a-fA-F]{3})$/);
-  if (shortHexMatch) {
-    return `#${shortHexMatch[1].split("").map((character) => `${character}${character}`).join("").toUpperCase()}`;
-  }
-
-  const longHexMatch = trimmed.match(/^#?([0-9a-fA-F]{6})$/);
-  if (longHexMatch) {
-    return `#${longHexMatch[1].toUpperCase()}`;
-  }
-
-  return DEFAULT_PROFILE_ICON_BACKGROUND_COLOR;
+  const long = color?.match(/^#?([0-9a-fA-F]{6})$/);
+  return long ? `#${long[1].toUpperCase()}` : DEFAULT_PROFILE_ICON_BACKGROUND_COLOR;
 }
