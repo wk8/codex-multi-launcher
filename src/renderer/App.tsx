@@ -184,7 +184,8 @@ export function App() {
           <strong>{browserLinksEnabled ? "Choose a profile when the browser returns" : "Browser links may open the main app"}</strong>
           <p className="subtitle">
             Connect an app, then choose the main or personal window that started the connection.
-            If another app takes over browser links, enable this again before connecting.
+            The launcher keeps browser links working while a personal profile is open,
+            even when this window is closed. Quitting the launcher stops this protection.
           </p>
         </div>
         <button className="secondary" onClick={() => void enableBrowserLinks()} disabled={Boolean(busy)}>

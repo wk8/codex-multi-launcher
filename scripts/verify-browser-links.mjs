@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { matchDesktopLinkTargets, sameDesktopTarget, validateCodexLink } from "../dist-electron/main/deep-links.js";
+import { matchDesktopLinkTargets, restoreBrowserLinkHandler, sameDesktopTarget, validateCodexLink } from "../dist-electron/main/deep-links.js";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-link-routing-"));
 process.on("exit", () => fs.rmSync(root, { recursive: true, force: true }));
@@ -35,4 +35,32 @@ assert.equal(validateCodexLink("codex://settings/plugins"), "codex://settings/pl
 for (const invalid of [null, {}, "", "https://example.com", "codex://", "codex://user:pass@connector/path", "codex://connector:42/path", " codex://launch", "codex://launch\n", "codex://launch\u0000", `codex://launch?${"a".repeat(65536)}`]) {
   assert.throws(() => validateCodexLink(invalid), /valid codex/);
 }
+
+let defaultHandler = "main";
+let registrations = 0;
+const client = {
+  isDefaultProtocolClient: (protocol) => {
+    assert.equal(protocol, "codex");
+    return defaultHandler === "launcher";
+  },
+  setAsDefaultProtocolClient: (protocol) => {
+    assert.equal(protocol, "codex");
+    registrations++;
+    defaultHandler = "launcher";
+    return true;
+  }
+};
+assert.equal(await restoreBrowserLinkHandler(client, async () => [targets[0]]), false);
+assert.equal(registrations, 0, "Do not reclaim the handler for main-app-only sessions");
+assert.equal(await restoreBrowserLinkHandler(client, async () => targets), true);
+assert.equal(registrations, 1, "Recover after a personal profile replaces the handler on startup");
+await restoreBrowserLinkHandler(client, async () => { throw new Error("Already registered; no process scan needed"); });
+assert.equal(registrations, 1, "Do not repeatedly register an unchanged handler");
+defaultHandler = "main";
+assert.equal(await restoreBrowserLinkHandler(client, async () => targets), true);
+assert.equal(registrations, 2, "Recover again after the main app restarts");
+defaultHandler = "main";
+assert.equal(await restoreBrowserLinkHandler({ ...client, setAsDefaultProtocolClient: () => false }, async () => targets), false);
+await assert.rejects(restoreBrowserLinkHandler(client, async () => { throw new Error("Process scan failed"); }), /Process scan failed/);
+assert.equal(registrations, 2);
 console.log("Browser link routing verification passed.");

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import {
   CODEX_LINK_PROTOCOL,
   listDesktopLinkTargets,
+  restoreBrowserLinkHandler,
   sameDesktopTarget,
   sendCodexLinkToTarget,
   validateCodexLink
@@ -30,6 +31,8 @@ let resolveLinksReady: () => void;
 const linksReady = new Promise<void>((resolve) => { resolveLinksReady = resolve; });
 let browserLinkQueue = Promise.resolve();
 const pendingBrowserLinks = new Set<string>();
+let browserLinkTimer: ReturnType<typeof setTimeout> | undefined;
+let quitting = false;
 
 app.on("open-url", (event, url) => {
   event.preventDefault();
@@ -115,6 +118,16 @@ function enableBrowserLinks(): boolean {
   return app.isDefaultProtocolClient(CODEX_LINK_PROTOCOL);
 }
 
+async function maintainBrowserLinks(): Promise<void> {
+  try {
+    await restoreBrowserLinkHandler(app, async () => listDesktopLinkTargets(await listProfiles()));
+  } catch {
+    console.warn("[personal-launcher] Could not restore browser link routing; will retry.");
+  } finally {
+    if (!quitting) browserLinkTimer = setTimeout(() => void maintainBrowserLinks(), 2000);
+  }
+}
+
 function queueBrowserLink(value: string): void {
   let url: string;
   try {
@@ -195,7 +208,10 @@ void app.whenReady().then(() => {
     userData: () => app.getPath("userData")
   });
   registerIpc();
-  if (app.isPackaged) enableBrowserLinks();
+  if (app.isPackaged) {
+    enableBrowserLinks();
+    void maintainBrowserLinks();
+  }
   resolveLinksReady();
   for (const argument of process.argv) {
     if (argument.startsWith("codex://")) queueBrowserLink(argument);
@@ -215,5 +231,12 @@ void app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
-  app.quit();
+  // Profile apps run independently. Closing this window must not stop their
+  // browser return-link routing when the official app takes the handler back.
+  if (process.platform !== "darwin") app.quit();
+});
+
+app.on("before-quit", () => {
+  quitting = true;
+  clearTimeout(browserLinkTimer);
 });

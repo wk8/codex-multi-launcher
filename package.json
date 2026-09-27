@@ -1,6 +1,6 @@
 {
   "name": "codex-personal-launcher",
-  "version": "0.1.9-personal.2",
+  "version": "0.1.9-personal.3",
   "private": true,
   "description": "Local-only macOS launcher for isolated personal ChatGPT account profiles.",
   "main": "dist-electron/main/index.js",

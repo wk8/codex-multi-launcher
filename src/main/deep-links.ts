@@ -78,6 +78,23 @@ export async function listDesktopLinkTargets(profiles: ManagedProfile[]): Promis
   return matchDesktopLinkTargets(profiles, await readDesktopProcesses());
 }
 
+export async function restoreBrowserLinkHandler(
+  client: {
+    isDefaultProtocolClient(protocol: string): boolean;
+    setAsDefaultProtocolClient(protocol: string): boolean;
+  },
+  getTargets: () => Promise<DesktopLinkTarget[]>
+): Promise<boolean> {
+  if (client.isDefaultProtocolClient(CODEX_LINK_PROTOCOL)) return true;
+  const targets = await getTargets();
+  if (!targets.some((target) => target.profileId !== null)) return false;
+
+  // The official app registers itself on startup, including profile launches.
+  // Keep the chooser available while an isolated profile needs return links.
+  client.setAsDefaultProtocolClient(CODEX_LINK_PROTOCOL);
+  return client.isDefaultProtocolClient(CODEX_LINK_PROTOCOL);
+}
+
 export function sameDesktopTarget(left: DesktopLinkTarget, right: DesktopLinkTarget): boolean {
   return left.pid === right.pid && left.profileId === right.profileId
     && left.executablePath === right.executablePath && left.userDataDir === right.userDataDir;
