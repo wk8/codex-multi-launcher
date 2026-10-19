@@ -73,6 +73,10 @@ It is intentionally not connected to the upstream release/update channel. The
 build command applies a local ad-hoc signature for Apple silicon; it is not
 Developer ID signed or notarized.
 
+After packaging, run `npm run verify:packaged-profile`. This creates two
+profiles in a temporary home using the packaged code after clearing Electron's
+temporary icon extraction, checking that profile creation survives temp cleanup.
+
 ## First-run acceptance check
 
 1. Leave the normal desktop app signed into the work account.

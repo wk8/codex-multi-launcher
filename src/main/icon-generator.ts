@@ -7,7 +7,9 @@ const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 
 export async function generateProfileIcon(iconPath: string, _backgroundColor: string): Promise<void> {
   await ensureDir(path.dirname(iconPath));
-  await fs.copyFile(await resolveBundledIcon(), iconPath);
+  // Read ASAR bytes directly; copyFile can reuse a deleted temporary extraction.
+  const icon = await fs.readFile(await resolveBundledIcon());
+  await fs.writeFile(iconPath, icon, { mode: 0o600 });
   await fs.chmod(iconPath, 0o600);
 }
 

@@ -18,7 +18,8 @@
     "verify:isolation": "npm run clean && npm run build:main && node scripts/verify-personal-isolation.mjs",
     "test": "npm run typecheck && npm run verify:isolation && npm run verify:browser-links",
     "verify:browser-links": "npm run build:main && node scripts/verify-browser-links.mjs",
-    "verify:browser-links:mac": "npm run build:main && node scripts/verify-browser-links-mac.mjs"
+    "verify:browser-links:mac": "npm run build:main && node scripts/verify-browser-links-mac.mjs",
+    "verify:packaged-profile": "node scripts/verify-packaged-profile-create.mjs"
   },
   "dependencies": {
     "react": "^19.2.3",
