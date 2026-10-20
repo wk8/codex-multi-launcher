@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -6,6 +6,9 @@ import type {
   PreparationResult, ProfileRuntimeInfo, SettingChange
 } from "../shared/types.js";
 import { parseDefaultsPolicy, type DefaultsPolicy } from "./defaults-policy.js";
+import { parseJsonObject } from "./json-object.js";
+import { reconcileWarnings } from "../shared/preparation-feedback.js";
+import { buildCommandInput, commandGroupExists, resolveCommand, runPreparationCommand, type CommandProfile } from "./preparation-command.js";
 import { editJsonSettings, editTomlSettings } from "./settings-edit.js";
 import {
   applyFileChanges, assertUnchanged, atomicWriteText, errorText, pendingTransactions,
@@ -14,6 +17,8 @@ import {
 
 export interface PreparationHost {
   dataDir: string;
+  userHomeDir: string;
+  commandProfile(profile: ManagedProfile): CommandProfile;
   inspect(profile: ManagedProfile): Promise<ProfileRuntimeInfo>;
   assertStorage(profile: ManagedProfile): Promise<void>;
 }
@@ -34,6 +39,7 @@ export class ProfilePreparation {
     try {
       const { policy } = await this.loadPolicy();
       const previous = await this.readResult(profile.id);
+      this.assertCommandStopped(previous);
       if ((await pendingTransactions(this.backupRoot(profile.id), this.profileFiles(profile))).length) {
         throw new Error("An interrupted defaults update needs recovery. Close the profile and choose Retry setup.");
       }
@@ -41,20 +47,33 @@ export class ProfilePreparation {
       await this.host.assertStorage(profile);
       const plan = await this.plan(profile, policy!);
       const runtime = await this.host.inspect(profile);
-      return this.previewResult(runtime.status === "not_running" ? "ready" : "deferred", plan.changes,
+      const preview = this.previewResult(runtime.status === "not_running" ? "ready" : "deferred", plan.changes,
         runtime.status === "not_running" ? [] : [this.deferredMessage(runtime)]);
+      if (policy!.prepareCommand) {
+        const command = resolveCommand(policy!.prepareCommand, this.policyFile);
+        preview.command = { executable: command.executable, args: command.args, cwd: command.cwd, status: "not-run" };
+        preview.messages.push({ severity: "info", code: "LAUNCHER_COMMAND_NOT_RUN", message: "The preparation command was not run. These settings are a preliminary plan; command checks and changes remain unchecked." });
+      }
+      return preview;
     } catch (error) {
       return this.previewResult("blocked", [], [failure(error)]);
     }
   }
 
   async prepare(profile: ManagedProfile, event: PreparationEvent): Promise<PreparationResult> {
-    const result: PreparationResult = {
+    let result: PreparationResult = {
       profileId: profile.id, event, checkedAt: new Date().toISOString(), status: "ready", messages: [], changedFiles: []
     };
     let previous: PreparationResult | null = null;
     try {
       previous = await this.readResult(profile.id);
+    } catch (error) {
+      // An unreadable ownership record is not evidence that its writer stopped.
+      // Keep the original record intact until it can be inspected/repaired.
+      return { ...result, status: "blocked", messages: [failure(error)] };
+    }
+    try {
+      this.assertCommandStopped(previous);
       const { snapshot, policy } = await this.loadPolicy();
       const applies = this.applies(policy, event, previous);
       const pending = await pendingTransactions(this.backupRoot(profile.id), this.profileFiles(profile));
@@ -67,7 +86,7 @@ export class ProfilePreparation {
       const runtime = await this.host.inspect(profile);
       if (runtime.status !== "not_running") {
         result.status = "deferred";
-        result.messages = [this.deferredMessage(runtime)];
+        result.messages = [...(previous?.messages.filter((message) => message.severity === "warning" && message.code !== "LAUNCHER_PROFILE_NOT_STOPPED") ?? []), this.deferredMessage(runtime)];
       } else {
         const ensureStopped = async () => {
           await this.host.assertStorage(profile);
@@ -78,23 +97,56 @@ export class ProfilePreparation {
         await ensureStopped();
         await recoverFileChanges(this.backupRoot(profile.id), this.profileFiles(profile), ensureStopped);
         if (applies) {
-          const plan = await this.plan(profile, policy!);
-          result.backupPath = await applyFileChanges(plan.files, this.backupRoot(profile.id), async () => {
+          let plan = await this.plan(profile, policy!);
+          if (policy!.prepareCommand) {
             await ensureStopped();
-            await assertUnchanged([snapshot]);
-          }, undefined, ensureStopped);
-          result.changedFiles = plan.files.filter((file) => file.before.text !== file.after).map((file) => file.before.path);
+            await assertUnchanged([snapshot, ...plan.files.map((file) => file.before)]);
+            const command = resolveCommand(policy!.prepareCommand, this.policyFile);
+            const input = buildCommandInput(this.host.commandProfile(profile), event, randomUUID(), {
+              userHomeDir: this.host.userHomeDir, dataDir: this.host.dataDir, policyFile: this.policyFile
+            }, command.cwd);
+            result.invocationId = input.invocationId;
+            const execution = await runPreparationCommand(command, input, async (processGroupId) => {
+              // Persist ownership before sending profile paths to the command.
+              // A restarted manager must not race a surviving command writer.
+              await this.saveResult({
+                ...result, status: "deferred", setupPending: event === "create" || Boolean(previous?.setupPending),
+                messages: [...(previous?.messages.filter((message) => message.severity === "warning") ?? []),
+                  { severity: "info", code: "LAUNCHER_COMMAND_IN_PROGRESS", message: "Preparation command is running. An interrupted preparation must wait for its processes to stop." }],
+                command: { exitCode: null, signal: null, durationMs: 0, stderr: "", stderrTruncated: false, processGroupId, cleanupPending: true }
+              });
+            });
+            result.command = execution.diagnostics;
+            result.messages = execution.messages;
+            result.status = execution.messages.some((message) => message.severity === "error") ? "blocked"
+              : execution.messages.some((message) => message.severity === "warning") ? "warning" : "ready";
+            if (result.status !== "blocked") {
+              await ensureStopped();
+              await assertUnchanged([snapshot]);
+              // Commands may edit either store. Build a fresh plan from disk.
+              plan = await this.plan(profile, policy!);
+            }
+          }
+          if (result.status !== "blocked") {
+            result.backupPath = await applyFileChanges(plan.files, this.backupRoot(profile.id), async () => {
+              await ensureStopped();
+              await assertUnchanged([snapshot]);
+            }, undefined, ensureStopped);
+            result.changedFiles = plan.files.filter((file) => file.before.text !== file.after).map((file) => file.before.path);
+          }
         } else {
           result.status = "disabled";
         }
       }
     } catch (error) {
       result.status = "blocked";
-      result.messages = [failure(error)];
+      result.messages.push(failure(error));
+      if (previous?.command?.cleanupPending && !result.command) result.command = previous.command;
     }
 
     result.setupPending = (event === "create" || Boolean(previous?.setupPending))
       && (result.status === "blocked" || result.status === "deferred");
+    result = reconcileWarnings(result, previous);
     await this.saveResult(result);
     return result;
   }
@@ -102,10 +154,15 @@ export class ProfilePreparation {
   async readResult(profileId: string): Promise<PreparationResult | null> {
     const snapshot = await readSettingsFile(this.resultFile(profileId), 256 * 1024);
     if (snapshot.text === null) return null;
-    const result = JSON.parse(snapshot.text) as PreparationResult;
+    const result = parseJsonObject(snapshot.text, `Preparation result ${snapshot.path}`) as unknown as PreparationResult;
     if (!result || result.profileId !== profileId || !["create", "startup", "launch"].includes(result.event)
       || !["disabled", "ready", "warning", "blocked", "deferred"].includes(result.status)
       || !Array.isArray(result.messages) || !Array.isArray(result.changedFiles)
+      || (result.acknowledgedWarnings !== undefined && (!Array.isArray(result.acknowledgedWarnings) || result.acknowledgedWarnings.some((code) => typeof code !== "string")))
+      || (result.newWarningCodes !== undefined && (!Array.isArray(result.newWarningCodes) || result.newWarningCodes.some((code) => typeof code !== "string")))
+      || (result.command !== undefined && (!result.command || typeof result.command.cleanupPending !== "boolean"
+        || typeof result.command.stderr !== "string" || typeof result.command.stderrTruncated !== "boolean"
+        || (result.command.processGroupId !== null && (!Number.isSafeInteger(result.command.processGroupId) || result.command.processGroupId <= 1))))
       || result.messages.some((message) => !message || !["info", "warning", "error"].includes(message.severity)
         || typeof message.code !== "string" || typeof message.message !== "string"
         || (message.details !== undefined && typeof message.details !== "string"))) {
@@ -118,11 +175,30 @@ export class ProfilePreparation {
     await fs.rm(this.resultFile(profileId), { force: true });
   }
 
+  async assertNoActiveCommand(profileId: string): Promise<void> {
+    this.assertCommandStopped(await this.readResult(profileId));
+  }
+
+  async acknowledgeWarnings(profileId: string): Promise<PreparationResult> {
+    const result = await this.readResult(profileId);
+    if (!result) throw new Error("This profile has no preparation result to acknowledge.");
+    result.acknowledgedWarnings = result.messages.filter((message) => message.severity === "warning").map((message) => message.code);
+    result.newWarningCodes = [];
+    await this.saveResult(result);
+    return result;
+  }
+
+  private assertCommandStopped(previous: PreparationResult | null): void {
+    if (previous?.command?.cleanupPending && commandGroupExists(previous.command.processGroupId)) {
+      throw new Error("The previous preparation command still has active processes. Preparation and launch remain blocked until they stop.");
+    }
+  }
+
   async recordFailure(profile: ManagedProfile, event: PreparationEvent, error: unknown): Promise<PreparationResult> {
-    const result: PreparationResult = {
+    const result = reconcileWarnings({
       profileId: profile.id, event, checkedAt: new Date().toISOString(), status: "blocked",
       messages: [failure(error)], changedFiles: []
-    };
+    }, await this.readResult(profile.id));
     await this.saveResult(result);
     return result;
   }
@@ -171,7 +247,7 @@ export class ProfilePreparation {
 
   private deferredMessage(runtime: ProfileRuntimeInfo): PreparationMessage {
     return {
-      severity: "warning", code: "PROFILE_NOT_STOPPED",
+      severity: "warning", code: "LAUNCHER_PROFILE_NOT_STOPPED",
       message: runtime.status === "running" ? "Setup pending: close this profile, then retry." : "Setup pending: the launcher cannot determine whether this profile is running.",
       details: runtime.detail
     };
@@ -187,5 +263,5 @@ function storageKey(profileId: string): string {
 }
 
 function failure(error: unknown): PreparationMessage {
-  return { severity: "error", code: "PREPARATION_FAILED", message: errorText(error) };
+  return { severity: "error", code: "LAUNCHER_PREPARATION_FAILED", message: errorText(error) };
 }

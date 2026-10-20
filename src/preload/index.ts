@@ -12,6 +12,7 @@ const api: CodexApi = {
   getPreparationResults: () => ipcRenderer.invoke("profiles:preparation"),
   previewProfileDefaults: (profileId: string) => ipcRenderer.invoke("profiles:preview-defaults", profileId),
   retryProfilePreparation: (profileId: string) => ipcRenderer.invoke("profiles:retry-preparation", profileId),
+  acknowledgeProfileWarnings: (profileId: string) => ipcRenderer.invoke("profiles:acknowledge-warnings", profileId),
   createProfile: (input: CreateProfileInput) => ipcRenderer.invoke("profiles:create", input),
   permanentlyDeleteProfile: (profileId: string) => ipcRenderer.invoke("profiles:delete-permanently", profileId),
   generateLauncher: (profileId: string) => ipcRenderer.invoke("profiles:generate-launcher", profileId),

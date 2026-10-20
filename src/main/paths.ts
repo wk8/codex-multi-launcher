@@ -54,6 +54,10 @@ export function getAppPaths(): AppPaths {
   };
 }
 
+export function getLauncherUserHome(): string {
+  return getPathProvider().home();
+}
+
 export function resolveCodexDesktopApp(preferredPath?: string | null): ResolvedDesktopApp {
   const preferred = preferredPath?.trim();
   if (preferred) {

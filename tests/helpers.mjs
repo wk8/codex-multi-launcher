@@ -28,6 +28,18 @@ export async function fixture(t) {
   let runtime = "not_running";
   const host = {
     dataDir,
+    userHomeDir: path.join(root, "launcher-user-home"),
+    commandProfile: (target) => ({
+      id: target.id, name: target.name, authMode: target.auth.mode, homeIsolated: true,
+      paths: {
+        homeDir: target.paths.homeDir, codexHome: target.paths.codexHome,
+        configFile: path.join(target.paths.codexHome, "config.toml"),
+        globalStateFile: path.join(target.paths.codexHome, ".codex-global-state.json"),
+        agentsFile: path.join(target.paths.codexHome, "AGENTS.md"),
+        userDataDir: target.paths.userDataDir, launcherPath: target.paths.launcherPath,
+        desktopAppPath: target.paths.codexAppPath, desktopExecutablePath: path.join(target.paths.codexAppPath, "Contents", "MacOS", "ChatGPT")
+      }, appearance: target.appearance
+    }),
     inspect: async () => ({ profileId: profile.id, status: runtime, pid: runtime === "running" ? 123 : null, detail: "Test runtime" }),
     assertStorage: async () => undefined
   };
@@ -80,4 +92,13 @@ export async function serviceFixture(t, holdMs = 0) {
     writePolicy: (value = policy()) => fs.writeFile(path.join(appPaths.appDataDir, "profile-defaults.json"), JSON.stringify(value)),
     input: { name: "Test personal", codexAppPath: f.profile.paths.codexAppPath }
   };
+}
+
+export const readCommandInput = 'let data = ""; for await (const chunk of process.stdin) data += chunk; const input = JSON.parse(data);';
+export const commandResponse = (messages = []) => `process.stdout.write(JSON.stringify(${JSON.stringify({ protocolVersion: 1, messages })}));`;
+
+export async function writeCommand(f, source, overrides = {}) {
+  const script = path.join(f.root, "prepare profile ü.mjs");
+  await fs.writeFile(script, `import fs from "node:fs/promises";\n${readCommandInput}\n${source}\n`);
+  return { executable: process.execPath, args: [script], timeoutMs: 5000, ...overrides };
 }

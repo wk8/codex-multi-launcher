@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import path from "node:path";
 
-export const calls = { dialogs: [], notifications: [], windows: [], ipc: new Map() };
+export const calls = { dialogs: [], notifications: [], windows: [], ipc: new Map(), focused: true, notificationsSupported: true, notificationFails: false };
 let ready;
 const readyPromise = new Promise((resolve) => { ready = resolve; });
 export const app = Object.assign(new EventEmitter(), {
@@ -31,15 +31,15 @@ export class BrowserWindow extends EventEmitter {
   loadURL() { return Promise.resolve(); }
   isMinimized() { return false; }
   isVisible() { return true; }
-  isFocused() { return true; }
-  restore() {} show() {} focus() {}
+  isFocused() { return calls.focused; }
+  restore() {} show() {} focus() { calls.focused = true; }
 }
 export const ipcMain = { handle: (name, callback) => calls.ipc.set(name, callback) };
 export const dialog = { showErrorBox: (...args) => calls.dialogs.push(args), showMessageBox: async () => ({ response: 0 }) };
 export const shell = { showItemInFolder() {} };
 export class Notification {
-  static isSupported() { return true; }
+  static isSupported() { return calls.notificationsSupported; }
   constructor(options) { this.options = options; }
-  show() { calls.notifications.push(this.options); }
+  show() { if (calls.notificationFails) throw Error("Unavailable notifications"); calls.notifications.push(this.options); }
   on() { return this; }
 }

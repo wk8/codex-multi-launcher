@@ -525,6 +525,17 @@ legend {
   margin: 6px 0;
 }
 
+.preparation-feedback button + button {
+  margin-left: 8px;
+}
+
+.notice {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  white-space: pre-wrap;
+}
+
 .preparation-feedback pre,
 .defaults-preview pre {
   white-space: pre-wrap;

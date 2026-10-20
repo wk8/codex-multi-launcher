@@ -187,7 +187,8 @@ async function restoreJournal(
   const originals = await Promise.all(journal.entries.map(async (entry) => {
     const current = await readSettingsFile(entry.path);
     const currentHash = hash(current.text);
-    if (currentHash !== entry.beforeHash && currentHash !== entry.afterHash) {
+    if ((currentHash !== entry.beforeHash && currentHash !== entry.afterHash)
+      || (currentHash === entry.afterHash && current.mode !== entry.mode)) {
       throw new Error(`Refusing to overwrite an external edit during recovery: ${entry.path}`);
     }
     const original = entry.existed ? await readSettingsFile(path.join(directory, entry.backup)) : null;

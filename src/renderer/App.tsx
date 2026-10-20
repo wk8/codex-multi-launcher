@@ -8,6 +8,7 @@ import type {
   ProfileRuntimeInfo
 } from "../shared/types";
 import { PreparationFeedback } from "./PreparationFeedback";
+import { newWarnings } from "../shared/preparation-feedback";
 
 const PROFILE_COLORS = ["#34C759", "#007AFF", "#AF52DE", "#FF9500", "#FF2D55", "#00A6A6"];
 
@@ -18,6 +19,7 @@ export function App() {
   const [runtime, setRuntime] = useState<ProfileRuntimeInfo[]>([]);
   const [preparation, setPreparation] = useState<PreparationResult[]>([]);
   const [preview, setPreview] = useState<PreparationPreview | null>(null);
+  const [notice, setNotice] = useState<{ profileId: string; text: string } | null>(null);
   const [browserLinksEnabled, setBrowserLinksEnabled] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [profileName, setProfileName] = useState("Personal");
@@ -109,11 +111,12 @@ export function App() {
     setBusy("create");
     setError(null);
     try {
-      await window.codexProfileManager.createProfile({
+      const result = await window.codexProfileManager.createProfile({
         name: profileName,
         codexAppPath: appPath,
         appearance: { iconBackgroundColor: color }
       });
+      showPreparationFeedback(result.preparation);
       await refreshProfiles();
       setShowCreate(false);
       setProfileName("Personal");
@@ -128,13 +131,28 @@ export function App() {
     setBusy(profileId);
     setError(null);
     try {
-      await action();
+      const value = await action();
+      if (value && typeof value === "object") {
+        if ("preparation" in value) showPreparationFeedback(value.preparation as PreparationResult);
+        else if ("checkedAt" in value && "messages" in value) showPreparationFeedback(value as PreparationResult);
+      }
     } catch (reason) {
       setError(errorMessage(reason));
     } finally {
       await refreshProfiles().catch((reason) => setError(errorMessage(reason)));
       setBusy(null);
     }
+  }
+
+  function showPreparationFeedback(result: PreparationResult) {
+    if (result.status === "blocked") setError(result.messages.filter((message) => message.severity === "error").map((message) => message.message).join("\n"));
+    const warnings = newWarnings(result);
+    if (warnings.length) setNotice({ profileId: result.profileId, text: warnings.map((message) => message.message).join("\n") });
+    else setNotice((current) => current?.profileId === result.profileId ? null : current);
+  }
+
+  async function acknowledgeWarnings(profileId: string) {
+    await runProfileAction(profileId, () => window.codexProfileManager.acknowledgeProfileWarnings(profileId));
   }
 
   async function deleteProfile(profile: ManagedProfile) {
@@ -179,6 +197,10 @@ export function App() {
           <button onClick={() => setError(null)}>Dismiss</button>
         </div>
       ) : null}
+
+      {notice ? <div className="setup-summary notice" role="status"><span>{notice.text}</span>
+        <button className="secondary" disabled={Boolean(busy)} onClick={() => void acknowledgeWarnings(notice.profileId)}>Acknowledge</button>
+      </div> : null}
 
       {setupBlocked || setupPending || setupWarnings ? (
         <div className="setup-summary" role="status">
@@ -264,6 +286,7 @@ export function App() {
                   </dl>
 
                   <PreparationFeedback result={preparationByProfile.get(profile.id)} busy={Boolean(busy)}
+                    onAcknowledge={() => void acknowledgeWarnings(profile.id)}
                     onRetry={() => void runProfileAction(profile.id, () => window.codexProfileManager.retryProfilePreparation(profile.id))} />
 
                   <div className="profile-actions">
@@ -322,6 +345,10 @@ export function App() {
             </div>
             <p>This preview does not change files.</p>
             <code>{preview.policyFile}</code>
+            {preview.command ? <details open><summary>Preparation command: not run</summary>
+              <pre>{JSON.stringify([preview.command.executable, ...preview.command.args])}</pre>
+              <p>Working directory: <code>{preview.command.cwd}</code></p>
+            </details> : null}
             {preview.messages.map((message, index) => <p key={index}>{message.message}</p>)}
             {preview.status === "disabled" ? <p>No defaults apply to this existing profile.</p> : null}
             {preview.changes.length ? <div className="preview-table"><table>

@@ -28,6 +28,25 @@ export interface PreparationResult {
   changedFiles: string[];
   backupPath?: string;
   setupPending?: boolean;
+  invocationId?: string;
+  command?: CommandDiagnostics;
+  acknowledgedWarnings?: string[];
+  newWarningCodes?: string[];
+}
+
+export interface CommandDiagnostics {
+  exitCode: number | null;
+  signal: string | null;
+  durationMs: number;
+  stderr: string;
+  stderrTruncated: boolean;
+  processGroupId: number | null;
+  cleanupPending: boolean;
+}
+
+export interface OpenProfileResult {
+  pid: number | null;
+  preparation: PreparationResult;
 }
 
 export interface PreparationPreview {
@@ -35,6 +54,7 @@ export interface PreparationPreview {
   status: PreparationResult["status"];
   messages: PreparationMessage[];
   changes: SettingChange[];
+  command?: { executable: string; args: string[]; cwd: string; status: "not-run" };
 }
 
 export interface AppPaths {
@@ -140,9 +160,10 @@ export interface CodexApi {
   getPreparationResults(): Promise<PreparationResult[]>;
   previewProfileDefaults(profileId: string): Promise<PreparationPreview>;
   retryProfilePreparation(profileId: string): Promise<PreparationResult>;
+  acknowledgeProfileWarnings(profileId: string): Promise<PreparationResult>;
   createProfile(input: CreateProfileInput): Promise<CreateProfileResult>;
   permanentlyDeleteProfile(profileId: string): Promise<{ ok: true }>;
   generateLauncher(profileId: string): Promise<LauncherResult>;
   revealLauncher(profileId: string): Promise<{ ok: true }>;
-  openProfile(profileId: string): Promise<{ pid: number | null }>;
+  openProfile(profileId: string): Promise<OpenProfileResult>;
 }

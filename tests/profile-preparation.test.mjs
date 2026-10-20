@@ -71,7 +71,7 @@ for (const runtime of ["running", "unknown"]) {
     for (const event of ["create", "startup", "launch"]) {
       const result = await f.coordinator.prepare(f.profile, event);
       assert.equal(result.status, "deferred");
-      assert.equal(result.messages[0].code, "PROFILE_NOT_STOPPED");
+      assert.equal(result.messages[0].code, "LAUNCHER_PROFILE_NOT_STOPPED");
     }
     assert.deepEqual(await fs.readdir(f.profile.paths.codexHome), []);
     assert.equal(await exists(path.join(f.dataDir, "profile-defaults-backups")), false);

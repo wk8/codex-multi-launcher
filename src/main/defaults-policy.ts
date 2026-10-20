@@ -1,4 +1,5 @@
 import type { JsonValue } from "../shared/types.js";
+import { parseJsonObject } from "./json-object.js";
 
 export interface SettingDefault {
   path: string[];
@@ -12,6 +13,14 @@ export interface DefaultsPolicy {
   mode: "fill-missing" | "enforce";
   config: SettingDefault[];
   desktopState: SettingDefault[];
+  prepareCommand?: PreparationCommand;
+}
+
+export interface PreparationCommand {
+  executable: string;
+  args: string[];
+  cwd?: string;
+  timeoutMs: number;
 }
 
 // The host can add ownership constraints when integrating the engine elsewhere.
@@ -25,9 +34,8 @@ export function parseDefaultsPolicy(
   text: string,
   ownedPaths = LAUNCHER_OWNED_CONFIG_PATHS
 ): DefaultsPolicy {
-  const raw: unknown = JSON.parse(text);
-  assertObject(raw, "Policy");
-  assertKeys(raw, ["schemaVersion", "enabled", "scope", "mode", "config", "desktopState"], "Policy");
+  const raw = parseJsonObject(text, "Policy");
+  assertKeys(raw, ["schemaVersion", "enabled", "scope", "mode", "config", "desktopState", "prepareCommand"], "Policy");
   if (raw.schemaVersion !== 1) throw new Error("Policy schemaVersion must be 1.");
   if (typeof raw.enabled !== "boolean") throw new Error("Policy enabled must be a boolean.");
   if (raw.scope !== "new-profiles" && raw.scope !== "all-managed-profiles") {
@@ -45,7 +53,26 @@ export function parseDefaultsPolicy(
     }
   }
 
-  return { schemaVersion: 1, enabled: raw.enabled, scope: raw.scope, mode: raw.mode, config, desktopState };
+  const policy: DefaultsPolicy = { schemaVersion: 1, enabled: raw.enabled, scope: raw.scope, mode: raw.mode, config, desktopState };
+  if (raw.prepareCommand !== undefined) policy.prepareCommand = parseCommand(raw.prepareCommand);
+  return policy;
+}
+
+function parseCommand(raw: unknown): PreparationCommand {
+  assertObject(raw, "prepareCommand");
+  assertKeys(raw, ["executable", "args", "cwd", "timeoutMs"], "prepareCommand");
+  const validString = (value: unknown): value is string => typeof value === "string" && !value.includes("\0") && value.length <= 8192;
+  if (!validString(raw.executable) || !raw.executable.trim()) throw new Error("prepareCommand.executable must be a non-empty executable name or path.");
+  if (raw.args !== undefined && (!Array.isArray(raw.args) || raw.args.length > 256 || !raw.args.every(validString))) {
+    throw new Error("prepareCommand.args must be an array of at most 256 literal strings.");
+  }
+  if (raw.cwd !== undefined && (!validString(raw.cwd) || !raw.cwd.trim())) throw new Error("prepareCommand.cwd must be a non-empty path.");
+  const timeoutMs = raw.timeoutMs ?? 30000;
+  if (!Number.isInteger(timeoutMs) || (timeoutMs as number) < 100 || (timeoutMs as number) > 300000) {
+    throw new Error("prepareCommand.timeoutMs must be an integer between 100 and 300000.");
+  }
+  return { executable: raw.executable, args: (raw.args as string[] | undefined) ?? [],
+    ...(raw.cwd === undefined ? {} : { cwd: raw.cwd as string }), timeoutMs: timeoutMs as number };
 }
 
 function parseSettings(value: unknown, label: string, allowNull: boolean): SettingDefault[] {

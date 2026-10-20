@@ -4,6 +4,10 @@ The launcher can apply an explicit local policy to the profiles it manages.
 Nothing is inherited from the main app or another profile. The feature is off
 when the policy file is absent or `enabled` is false.
 
+An optional [preparation command](preparation-command.md) can run user-defined
+checks or changes before these defaults. It receives profile/path context on
+stdin and reports warnings or blocking errors through a versioned JSON response.
+
 Create `profile-defaults.json` in the launcher's application-data directory. In
 this macOS build that is `~/Library/Application Support/Codex Personal Launcher`.
 The **Preview defaults** action shows the resolved policy path. Policies are
@@ -35,6 +39,7 @@ never discovered in a repository, profile, or instruction file.
 | `mode` | `fill-missing` preserves existing preferences, including false, zero and null; `enforce` restores the specified values on every applicable preparation. |
 | `config` | Optional array of edits to `CODEX_HOME/config.toml`. |
 | `desktopState` | Optional array of edits to `CODEX_HOME/.codex-global-state.json`. |
+| `prepareCommand` | Optional local command, with the same scope and lifecycle. See its [contract](preparation-command.md). |
 | edit `path` | Array of literal object keys, not dotted notation. For example, `["desktop", "a.b"]` refers to a single key containing a dot. Numeric array indices are unsupported. |
 | edit `value` | String, boolean, finite number, or array. JSON state also permits null. Arrays are replaced as a whole and may contain objects; object members otherwise need their own leaf paths. |
 

@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { getStaticTOMLValue, parseTOML, type AST } from "toml-eslint-parser";
-import { applyEdits, findNodeAtLocation, modify, parseTree, type Node, type ParseError } from "jsonc-parser";
+import { applyEdits, findNodeAtLocation, modify } from "jsonc-parser";
+import { parseJsonObjectTree } from "./json-object.js";
 import { isObject, type DefaultsPolicy, type SettingDefault } from "./defaults-policy.js";
 import type { JsonValue, SettingChange } from "../shared/types.js";
 
@@ -9,7 +10,7 @@ interface EditResult { text: string; changes: Omit<SettingChange, "filePath">[] 
 
 export function editJsonSettings(text: string | null, settings: SettingDefault[], mode: Mode): EditResult {
   let next = text ?? "{}\n";
-  let tree = parseJsonDocument(next);
+  let tree = parseJsonObjectTree(next, "Desktop state");
   const changes: EditResult["changes"] = [];
 
   for (const setting of settings) {
@@ -19,26 +20,11 @@ export function editJsonSettings(text: string | null, settings: SettingDefault[]
     const node = findNodeAtLocation(tree, setting.path);
     const before = node ? next.slice(node.offset, node.offset + node.length) : null;
     next = applyEdits(next, modify(next, setting.path, setting.value, {}));
-    tree = parseJsonDocument(next);
+    tree = parseJsonObjectTree(next, "Desktop state");
     changes.push({ path: setting.path, before, after: JSON.stringify(setting.value) });
   }
 
   return { text: next, changes };
-}
-
-function parseJsonDocument(text: string): Node {
-  const errors: ParseError[] = [];
-  const root = parseTree(text, errors, { disallowComments: true, allowTrailingComma: false });
-  if (errors.length || root?.type !== "object") throw new Error("Desktop state must contain a valid JSON object.");
-  function checkDuplicates(node: Node): void {
-    if (node.type === "object") {
-      const keys = node.children!.map((property) => property.children![0].value);
-      if (new Set(keys).size !== keys.length) throw new Error("Desktop state contains duplicate object keys.");
-    }
-    for (const child of node.children ?? []) checkDuplicates(child);
-  }
-  checkDuplicates(root);
-  return root;
 }
 
 export function editTomlSettings(text: string | null, settings: SettingDefault[], mode: Mode): EditResult {

@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld("codexProfileManager", {
   getPreparationResults: () => ipcRenderer.invoke("profiles:preparation"),
   previewProfileDefaults: (profileId) => ipcRenderer.invoke("profiles:preview-defaults", profileId),
   retryProfilePreparation: (profileId) => ipcRenderer.invoke("profiles:retry-preparation", profileId),
+  acknowledgeProfileWarnings: (profileId) => ipcRenderer.invoke("profiles:acknowledge-warnings", profileId),
   createProfile: (input) => ipcRenderer.invoke("profiles:create", input),
   permanentlyDeleteProfile: (profileId) => ipcRenderer.invoke("profiles:delete-permanently", profileId),
   generateLauncher: (profileId) => ipcRenderer.invoke("profiles:generate-launcher", profileId),

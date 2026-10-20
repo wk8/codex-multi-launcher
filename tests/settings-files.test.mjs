@@ -134,6 +134,20 @@ test("runtime safety checks also guard recovery and leave a pending journal", as
   await recoverFileChanges(backups, [f.configFile, f.stateFile], noop);
 });
 
+test("recovery preserves an external permission change instead of overwriting it", async (t) => {
+  const f = await fixture(t);
+  const changes = await plan(f);
+  const backups = path.join(f.root, "backups");
+  let calls = 0;
+  await assert.rejects(applyFileChanges(changes, backups, noop, {
+    replace: async (...args) => { if (++calls > 1) throw Error("interruption"); await atomicWriteText(...args); }, remove: fs.unlink
+  }));
+  await fs.chmod(f.configFile, 0o400);
+  await assert.rejects(recoverFileChanges(backups, [f.configFile, f.stateFile], noop), /external edit/);
+  assert.equal((await fs.stat(f.configFile)).mode & 0o777, 0o400);
+  assert.equal(await fs.readFile(f.configFile, "utf8"), "new one");
+});
+
 test("safe reads distinguish absent files from invalid UTF-8, links, directories and oversize files", async (t) => {
   const f = await fixture(t);
   assert.equal((await readSettingsFile(f.configFile)).text, null);

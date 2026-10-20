@@ -117,3 +117,9 @@ managed profiles. This does not copy settings or instructions from another
 profile. See [Profile defaults](docs/profile-defaults.md) for the policy contract,
 preview, lifecycle, recovery, and test commands. With no policy, profiles continue
 to start empty.
+
+An optional [preparation command](docs/preparation-command.md) can implement
+user-specific setup such as instruction validation. It receives explicit profile
+paths and reports structured warnings/errors; the launcher defines no personal
+instruction-header format. Configuring a command explicitly delegates its
+profile changes to that local program.

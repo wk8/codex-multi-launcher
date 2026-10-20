@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -12,6 +12,7 @@ import {
 import { getEnvironmentReport } from "./environment.js";
 import { APP_NAME, configurePathProvider } from "./paths.js";
 import {
+  acknowledgeProfileWarnings,
   createProfile,
   generateProfileLauncher,
   getProfileLauncherPath,
@@ -24,7 +25,8 @@ import {
   retryProfilePreparation,
   refreshActiveProfileLaunchers
 } from "./profile-service.js";
-import type { CreateProfileInput } from "../shared/types.js";
+import type { CreateProfileInput, PreparationResult } from "../shared/types.js";
+import { newWarnings } from "../shared/preparation-feedback.js";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 let mainWindow: BrowserWindow | null = null;
@@ -110,15 +112,57 @@ function registerIpc(): void {
   ipcMain.handle("profiles:runtime", () => getRuntimeStatus());
   ipcMain.handle("profiles:preparation", async () => { await profilesReady; return getPreparationResults(); });
   ipcMain.handle("profiles:preview-defaults", async (_event, profileId: string) => { await profilesReady; return previewProfileDefaults(profileId); });
-  ipcMain.handle("profiles:retry-preparation", async (_event, profileId: string) => { await profilesReady; return retryProfilePreparation(profileId); });
-  ipcMain.handle("profiles:create", async (_event, input: CreateProfileInput) => { await profilesReady; return createProfile(input); });
+  ipcMain.handle("profiles:retry-preparation", async (_event, profileId: string) => {
+    await profilesReady;
+    const result = await retryProfilePreparation(profileId);
+    await notifyPreparation(result);
+    return result;
+  });
+  ipcMain.handle("profiles:acknowledge-warnings", async (_event, profileId: string) => { await profilesReady; return acknowledgeProfileWarnings(profileId); });
+  ipcMain.handle("profiles:create", async (_event, input: CreateProfileInput) => {
+    await profilesReady;
+    const result = await createProfile(input);
+    await notifyPreparation(result.preparation);
+    return result;
+  });
   ipcMain.handle("profiles:delete-permanently", async (_event, profileId: string) => { await profilesReady; return permanentlyDeleteProfile(profileId); });
   ipcMain.handle("profiles:generate-launcher", async (_event, profileId: string) => { await profilesReady; return generateProfileLauncher(profileId); });
   ipcMain.handle("profiles:reveal-launcher", async (_event, profileId: string) => {
     shell.showItemInFolder(await getProfileLauncherPath(profileId));
     return { ok: true };
   });
-  ipcMain.handle("profiles:open", async (_event, profileId: string) => { await profilesReady; return openProfile(profileId); });
+  ipcMain.handle("profiles:open", async (_event, profileId: string) => {
+    await profilesReady;
+    const result = await openProfile(profileId);
+    await notifyPreparation(result.preparation);
+    return result;
+  });
+}
+
+async function notifyPreparation(result: PreparationResult, background = false): Promise<void> {
+  const warnings = newWarnings(result);
+  if (!warnings.length || (!background && mainWindow?.isFocused())) return;
+  const profile = (await listProfiles()).find((item) => item.id === result.profileId);
+  showNotification(`Setup warning: ${profile?.name ?? result.profileId}`, warnings.map((message) => message.message).join("\n"));
+}
+
+function showNotification(title: string, body: string): void {
+  try {
+    if (Notification.isSupported()) new Notification({ title, body: body.slice(0, 1000) }).show();
+  } catch {
+    // OS notification availability must not change preparation or launch success.
+    // The same diagnostics remain available in the profile's persistent result.
+  }
+}
+
+function notifyStartupPreparation(results: PreparationResult[]): void {
+  if (mainWindow?.isFocused()) return;
+  const blocked = results.filter((result) => result.status === "blocked").length;
+  const pending = results.filter((result) => result.status === "deferred").length;
+  const warnings = results.filter((result) => result.status === "warning").length;
+  if (blocked || results.some((result) => newWarnings(result).length)) {
+    showNotification("Profile setup needs attention", `${blocked} blocked, ${pending} pending, ${warnings} with warnings. Open the launcher to review the profiles.`);
+  }
 }
 
 function enableBrowserLinks(): boolean {
@@ -196,7 +240,8 @@ function getOpenProfileArg(argv: string[]): string | null {
 async function openProfileFromArg(profileId: string): Promise<void> {
   try {
     await profilesReady;
-    await openProfile(profileId);
+    const result = await openProfile(profileId);
+    await notifyPreparation(result.preparation, true);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not open the personal profile.";
     dialog.showErrorBox("Personal Profile Launch Failed", message);
@@ -227,7 +272,7 @@ void app.whenReady().then(() => {
     if (argument.startsWith("codex://")) queueBrowserLink(argument);
   }
   createWindow();
-  void refreshActiveProfileLaunchers().catch((error) => {
+  void refreshActiveProfileLaunchers().then(notifyStartupPreparation).catch((error) => {
     dialog.showErrorBox("Profile Setup Failed", error instanceof Error ? error.message : String(error));
   }).finally(() => resolveProfilesReady());
   if (pendingOpenProfileId) {
