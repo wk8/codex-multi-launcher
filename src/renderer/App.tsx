@@ -3,8 +3,11 @@ import type {
   AppInfo,
   EnvironmentReport,
   ManagedProfile,
+  PreparationPreview,
+  PreparationResult,
   ProfileRuntimeInfo
 } from "../shared/types";
+import { PreparationFeedback } from "./PreparationFeedback";
 
 const PROFILE_COLORS = ["#34C759", "#007AFF", "#AF52DE", "#FF9500", "#FF2D55", "#00A6A6"];
 
@@ -13,6 +16,8 @@ export function App() {
   const [environment, setEnvironment] = useState<EnvironmentReport | null>(null);
   const [profiles, setProfiles] = useState<ManagedProfile[]>([]);
   const [runtime, setRuntime] = useState<ProfileRuntimeInfo[]>([]);
+  const [preparation, setPreparation] = useState<PreparationResult[]>([]);
+  const [preview, setPreview] = useState<PreparationPreview | null>(null);
   const [browserLinksEnabled, setBrowserLinksEnabled] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [profileName, setProfileName] = useState("Personal");
@@ -22,12 +27,14 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
 
   const refreshProfiles = useCallback(async () => {
-    const [nextProfiles, nextRuntime] = await Promise.all([
+    const [nextProfiles, nextRuntime, nextPreparation] = await Promise.all([
       window.codexProfileManager.listProfiles(),
-      window.codexProfileManager.getRuntimeStatus()
+      window.codexProfileManager.getRuntimeStatus(),
+      window.codexProfileManager.getPreparationResults()
     ]);
     setProfiles(nextProfiles);
     setRuntime(nextRuntime);
+    setPreparation(nextPreparation);
   }, []);
 
   const refreshEnvironment = useCallback(async (candidate?: string) => {
@@ -48,6 +55,7 @@ export function App() {
   useEffect(() => {
     const timer = window.setInterval(() => {
       void window.codexProfileManager.getRuntimeStatus().then(setRuntime).catch(() => undefined);
+      void window.codexProfileManager.getPreparationResults().then(setPreparation).catch(() => undefined);
     }, 4000);
     return () => window.clearInterval(timer);
   }, []);
@@ -78,6 +86,10 @@ export function App() {
     () => new Map(runtime.map((item) => [item.profileId, item])),
     [runtime]
   );
+  const preparationByProfile = useMemo(() => new Map(preparation.map((item) => [item.profileId, item])), [preparation]);
+  const setupBlocked = preparation.filter((item) => item.status === "blocked").length;
+  const setupPending = preparation.filter((item) => item.status === "deferred").length;
+  const setupWarnings = preparation.filter((item) => item.status === "warning").length;
 
   async function chooseDesktopApp() {
     const selected = await window.codexProfileManager.pickCodexAppPath();
@@ -117,10 +129,10 @@ export function App() {
     setError(null);
     try {
       await action();
-      await refreshProfiles();
     } catch (reason) {
       setError(errorMessage(reason));
     } finally {
+      await refreshProfiles().catch((reason) => setError(errorMessage(reason)));
       setBusy(null);
     }
   }
@@ -155,6 +167,7 @@ export function App() {
           <p>
             Every profile starts empty with dedicated HOME, CODEX_HOME, skills, and browser-data directories.
             Work settings, chats, plugins, skills, credentials, and environment variables are never imported.
+            Any profile defaults you configure are applied during setup.
           </p>
         </div>
         <span className="offline-badge">No launcher telemetry</span>
@@ -164,6 +177,13 @@ export function App() {
         <div className="error-banner" role="alert">
           <span>{error}</span>
           <button onClick={() => setError(null)}>Dismiss</button>
+        </div>
+      ) : null}
+
+      {setupBlocked || setupPending || setupWarnings ? (
+        <div className="setup-summary" role="status">
+          Profile setup: {setupBlocked} blocked · {setupPending} pending · {setupWarnings} with warnings.
+          Review the affected profiles below.
         </div>
       ) : null}
 
@@ -220,7 +240,7 @@ export function App() {
                       <p>ChatGPT account login</p>
                     </div>
                     <span className={`status ${running ? "running" : "stopped"}`}>
-                      {running ? "Running" : "Not running"}
+                      {running ? "Running" : status?.status === "not_running" ? "Not running" : "Runtime unknown"}
                     </span>
                   </div>
 
@@ -243,6 +263,9 @@ export function App() {
                     </div>
                   </dl>
 
+                  <PreparationFeedback result={preparationByProfile.get(profile.id)} busy={Boolean(busy)}
+                    onRetry={() => void runProfileAction(profile.id, () => window.codexProfileManager.retryProfilePreparation(profile.id))} />
+
                   <div className="profile-actions">
                     <button
                       className="primary"
@@ -260,6 +283,11 @@ export function App() {
                     </button>
                     <button className="secondary" onClick={() => void window.codexProfileManager.revealLauncher(profile.id)}>
                       Show shortcut
+                    </button>
+                    <button className="secondary" disabled={Boolean(busy)} onClick={() => void runProfileAction(profile.id, async () => {
+                      setPreview(await window.codexProfileManager.previewProfileDefaults(profile.id));
+                    })}>
+                      Preview defaults
                     </button>
                     <button className="danger" disabled={Boolean(busy)} onClick={() => void deleteProfile(profile)}>
                       Delete
@@ -285,6 +313,27 @@ export function App() {
         <span>{appInfo ? `${appInfo.name} ${appInfo.version}` : "Local build"}</span>
         <span>No subscriptions · No announcements · No updater</span>
       </footer>
+
+      {preview ? (
+        <div className="modal-backdrop" role="presentation">
+          <section className="modal defaults-preview" role="dialog" aria-modal="true" aria-labelledby="preview-title">
+            <div className="modal-header"><h2 id="preview-title">Preview profile defaults</h2>
+              <button className="close-button" onClick={() => setPreview(null)} aria-label="Close">×</button>
+            </div>
+            <p>This preview does not change files.</p>
+            <code>{preview.policyFile}</code>
+            {preview.messages.map((message, index) => <p key={index}>{message.message}</p>)}
+            {preview.status === "disabled" ? <p>No defaults apply to this existing profile.</p> : null}
+            {preview.changes.length ? <div className="preview-table"><table>
+              <thead><tr><th>File / setting path</th><th>Current</th><th>Default</th></tr></thead>
+              <tbody>{preview.changes.map((change) => <tr key={`${change.filePath}:${JSON.stringify(change.path)}`}>
+                <td><code>{change.filePath}</code><pre>{JSON.stringify(change.path)}</pre></td>
+                <td><pre>{change.before ?? "(missing)"}</pre></td><td><pre>{change.after}</pre></td>
+              </tr>)}</tbody>
+            </table></div> : preview.status === "ready" ? <p>Settings already match.</p> : null}
+          </section>
+        </div>
+      ) : null}
 
       {showCreate ? (
         <div className="modal-backdrop" role="presentation">
@@ -333,8 +382,8 @@ export function App() {
             </fieldset>
 
             <div className="isolation-summary">
-              <strong>Always starts clean</strong>
-              <p>No default configuration, history, plugins, skills, MCP servers, API keys, or subscription services.</p>
+              <strong>Dedicated profile storage</strong>
+              <p>No settings or account data are inherited from another profile. Your configured profile defaults are applied during setup.</p>
             </div>
 
             <div className="modal-actions">

@@ -110,3 +110,10 @@ Ordinary HTTP and HTTPS links keep their existing browser handler.
 Run `npm run verify:browser-links` for routing checks and
 `npm run verify:browser-links:mac` for delivery to two temporary Electron
 receivers. These checks use synthetic links and no real credentials.
+## Optional profile defaults
+
+An explicit local policy can now apply selected preferences to new and existing
+managed profiles. This does not copy settings or instructions from another
+profile. See [Profile defaults](docs/profile-defaults.md) for the policy contract,
+preview, lifecycle, recovery, and test commands. With no policy, profiles continue
+to start empty.

@@ -491,6 +491,71 @@ legend {
   margin-top: 24px;
 }
 
+.setup-summary,
+.preparation-feedback {
+  margin: 16px 0;
+  border: 1px solid #d9dee7;
+  border-radius: 12px;
+  padding: 13px 15px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.setup-summary,
+.preparation-feedback.warning,
+.preparation-feedback.deferred {
+  color: #78510b;
+  background: #fff8e8;
+  border-color: #edd393;
+}
+
+.preparation-feedback.blocked {
+  color: #8e241c;
+  background: #fff4f3;
+  border-color: #f6c4c0;
+}
+
+.preparation-feedback.ready {
+  color: #12613c;
+  background: #effaf4;
+}
+
+.preparation-feedback small {
+  display: block;
+  margin: 6px 0;
+}
+
+.preparation-feedback pre,
+.defaults-preview pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+
+.defaults-preview {
+  width: min(940px, 100%);
+  max-height: 85vh;
+  overflow: auto;
+}
+
+.preview-table {
+  overflow-x: auto;
+  margin-top: 16px;
+}
+
+.preview-table table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.preview-table td,
+.preview-table th {
+  text-align: left;
+  vertical-align: top;
+  border: 1px solid #d9dee7;
+  padding: 8px;
+}
+
 @media (max-width: 820px) {
   .app-shell {
     width: min(100% - 28px, 1040px);

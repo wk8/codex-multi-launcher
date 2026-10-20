@@ -58,6 +58,24 @@ export function assertIsolatedProfile(profile: ManagedProfile): void {
   }
 }
 
+export async function assertIsolatedProfileStorage(profile: ManagedProfile): Promise<void> {
+  assertIsolatedProfile(profile);
+  const roots = getAppPaths();
+  for (const [candidate, root] of [
+    [profile.paths.codexHome, roots.defaultProfileRoot],
+    [profile.paths.userDataDir, roots.defaultUserDataRoot]
+  ]) {
+    let current = path.resolve(root);
+    for (const segment of path.relative(current, candidate).split(path.sep)) {
+      current = path.join(current, segment);
+      const stat = await fs.lstat(current);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) {
+        throw new Error(`Refusing profile storage through a link or non-directory: ${current}`);
+      }
+    }
+  }
+}
+
 function assertInside(candidate: string, root: string, label: string): void {
   const relative = path.relative(path.resolve(root), path.resolve(candidate));
   if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {

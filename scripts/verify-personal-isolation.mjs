@@ -18,7 +18,9 @@ try {
     [
       "#!/bin/sh",
       "{",
-      "  printenv | sort",
+      "  for name in HOME CODEX_HOME CODEX_PERSONAL_HOME XDG_CONFIG_HOME USER_DATA_DIR OPENAI_API_KEY CODEX_WORK_SECRET CHATGPT_WORK_SECRET ELECTRON_WORK_SECRET; do",
+      "    if printenv \"$name\" >/dev/null; then printf '%s=' \"$name\"; printenv \"$name\"; fi",
+      "  done",
       "  printf 'ARGS:'",
       "  for argument in \"$@\"; do printf ' <%s>' \"$argument\"; done",
       "  printf '\\n'",

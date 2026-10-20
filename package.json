@@ -16,14 +16,17 @@
     "sign:mac": "codesign --force --deep --sign - \"dist-app/mac-arm64/Codex Personal Launcher.app\" && codesign --verify --deep --strict \"dist-app/mac-arm64/Codex Personal Launcher.app\"",
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "verify:isolation": "npm run clean && npm run build:main && node scripts/verify-personal-isolation.mjs",
-    "test": "npm run typecheck && npm run verify:isolation && npm run verify:browser-links",
+    "test": "npm run typecheck && npm run verify:isolation && npm run verify:browser-links && npm run verify:defaults",
+    "verify:defaults": "npm run build:main && node --test tests/*.test.mjs",
     "verify:browser-links": "npm run build:main && node scripts/verify-browser-links.mjs",
     "verify:browser-links:mac": "npm run build:main && node scripts/verify-browser-links-mac.mjs",
     "verify:packaged-profile": "node scripts/verify-packaged-profile-create.mjs"
   },
   "dependencies": {
+    "jsonc-parser": "3.3.1",
     "react": "^19.2.3",
-    "react-dom": "^19.2.3"
+    "react-dom": "^19.2.3",
+    "toml-eslint-parser": "1.0.3"
   },
   "devDependencies": {
     "@types/node": "^24.10.2",

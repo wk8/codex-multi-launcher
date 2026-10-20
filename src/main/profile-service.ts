@@ -1,14 +1,17 @@
-import { spawn, type SpawnOptions } from "node:child_process";
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import nodeFs from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
   assertIsolatedProfile,
+  assertIsolatedProfileStorage,
   ensureIsolatedProfileHome,
   initializeIsolatedProfile
 } from "./isolated-profile.js";
 import { generateLauncher } from "./launcher.js";
-import { codexExecutablePath } from "./paths.js";
+import { codexExecutablePath, getAppPaths } from "./paths.js";
+import { KeyedLock } from "./keyed-lock.js";
+import { ProfilePreparation } from "./profile-preparation.js";
 import { pathExists } from "./fs-utils.js";
 import {
   createProfileRecord,
@@ -24,10 +27,36 @@ import type {
   CreateProfileResult,
   LauncherResult,
   ManagedProfile,
+  PreparationPreview,
+  PreparationResult,
   ProfileRuntimeInfo
 } from "../shared/types.js";
 
 export { listProfiles };
+
+const profileLocks = new KeyedLock();
+const pendingOpens = new Map<string, Promise<{ pid: number | null }>>();
+const launchedChildren = new Map<string, ChildProcess>();
+
+function profileKey(profileId: string): string {
+  return `${getAppPaths().appDataDir}:${profileId}`;
+}
+
+function preparation(): ProfilePreparation {
+  return new ProfilePreparation({
+    dataDir: getAppPaths().appDataDir,
+    inspect: inspectProfile,
+    assertStorage: assertIsolatedProfileStorage
+  });
+}
+
+async function inspectProfile(profile: ManagedProfile): Promise<ProfileRuntimeInfo> {
+  const child = launchedChildren.get(profileKey(profile.id));
+  if (child?.pid && child.exitCode === null && child.signalCode === null) {
+    return { profileId: profile.id, status: "running", pid: child.pid, detail: "The launcher is tracking this desktop process." };
+  }
+  return (await inspectRuntimeStatus([profile]))[0];
+}
 
 interface LaunchLog {
   path: string;
@@ -35,40 +64,74 @@ interface LaunchLog {
 }
 
 export async function getRuntimeStatus(): Promise<ProfileRuntimeInfo[]> {
-  return inspectRuntimeStatus(await listProfiles());
+  return Promise.all((await listProfiles()).map(inspectProfile));
+}
+
+export async function getPreparationResults(): Promise<PreparationResult[]> {
+  const coordinator = preparation();
+  const results = await Promise.all((await listProfiles()).map((profile) => coordinator.readResult(profile.id)));
+  return results.filter((result): result is PreparationResult => result !== null);
+}
+
+export async function previewProfileDefaults(profileId: string): Promise<PreparationPreview> {
+  return profileLocks.run(profileKey(profileId), async () => preparation().preview(await mustFindProfile(profileId)));
+}
+
+export async function retryProfilePreparation(profileId: string): Promise<PreparationResult> {
+  return profileLocks.run(profileKey(profileId), async () => {
+    const coordinator = preparation();
+    const previous = await coordinator.readResult(profileId);
+    return coordinator.prepare(await mustFindProfile(profileId), previous?.setupPending ? "create" : "startup");
+  });
 }
 
 export async function createProfile(input: CreateProfileInput): Promise<CreateProfileResult> {
   rejectLegacyFeatures(input);
   const profile = await createProfileRecord(input);
-  try {
-    const configPath = await initializeIsolatedProfile(profile);
-    const launcher = await generateLauncher(profile);
-    return {
-      profile,
-      configPath,
-      launcherPath: launcher.launcherPath
-    };
-  } catch (error) {
-    await cleanupFailedProfileCreation(profile);
-    throw error;
-  }
+  return profileLocks.run(profileKey(profile.id), async () => {
+    let configPath: string;
+    let launcher: LauncherResult;
+    try {
+      configPath = await initializeIsolatedProfile(profile);
+      launcher = await generateLauncher(profile);
+    } catch (error) {
+      await cleanupFailedProfileCreation(profile);
+      throw error;
+    }
+
+    // Preparation failures retain the initialized profile for inspection/retry.
+    const result = await preparation().prepare(profile, "create");
+    return { profile, configPath, launcherPath: launcher.launcherPath, preparation: result };
+  });
 }
 
 export async function generateProfileLauncher(profileId: string): Promise<LauncherResult> {
-  const profile = await mustFindProfile(profileId);
-  assertIsolatedProfile(profile);
-  await ensureIsolatedProfileHome(profile);
-  return generateLauncher(profile);
+  return profileLocks.run(profileKey(profileId), async () => {
+    const profile = await mustFindProfile(profileId);
+    await assertIsolatedProfileStorage(profile);
+    if ((await inspectProfile(profile)).status !== "not_running") throw new Error("Close the profile before rebuilding its shortcut.");
+    await ensureIsolatedProfileHome(profile);
+    return generateLauncher(profile);
+  });
 }
 
-export async function refreshActiveProfileLaunchers(): Promise<void> {
+export async function refreshActiveProfileLaunchers(): Promise<PreparationResult[]> {
   const profiles = await listProfiles();
-  await Promise.all(profiles.map(async (profile) => {
-    assertIsolatedProfile(profile);
-    await ensureIsolatedProfileHome(profile);
-    await generateLauncher(profile);
-  }));
+  return Promise.all(profiles.map((profile) => profileLocks.run(profileKey(profile.id), async () => {
+    const coordinator = preparation();
+    const result = await coordinator.prepare(profile, "startup");
+    if (result.status === "blocked" || result.status === "deferred") return result;
+    try {
+      if ((await inspectProfile(profile)).status === "not_running") {
+        await assertIsolatedProfileStorage(profile);
+        await ensureIsolatedProfileHome(profile);
+        await generateLauncher(profile);
+      }
+      return result;
+    } catch (error) {
+      return coordinator.recordFailure(profile, "startup", error);
+    }
+  })));
 }
 
 export async function getProfileLauncherPath(profileId: string): Promise<string> {
@@ -78,20 +141,46 @@ export async function getProfileLauncherPath(profileId: string): Promise<string>
 }
 
 export async function permanentlyDeleteProfile(profileId: string): Promise<{ ok: true }> {
+  return profileLocks.run(profileKey(profileId), () => deleteStoppedProfile(profileId));
+}
+
+async function deleteStoppedProfile(profileId: string): Promise<{ ok: true }> {
   const profile = await mustFindProfile(profileId);
   assertIsolatedProfile(profile);
+  if ((await inspectProfile(profile)).status !== "not_running") throw new Error("Close the profile before deleting it.");
   await removeProfileRecord(profileId);
   await Promise.all([
     fs.rm(profile.paths.homeDir, { force: true, recursive: true }),
     fs.rm(profile.paths.userDataDir, { force: true, recursive: true }),
     fs.rm(profile.paths.launcherPath, { force: true, recursive: true })
   ]);
+  await preparation().forget(profileId);
   return { ok: true };
 }
 
 export async function openProfile(profileId: string): Promise<{ pid: number | null }> {
+  const key = profileKey(profileId);
+  const pending = pendingOpens.get(key);
+  if (pending) return pending;
+  const next = profileLocks.run(key, () => openPreparedProfile(profileId));
+  pendingOpens.set(key, next);
+  try {
+    return await next;
+  } finally {
+    if (pendingOpens.get(key) === next) pendingOpens.delete(key);
+  }
+}
+
+async function openPreparedProfile(profileId: string): Promise<{ pid: number | null }> {
   const profile = await repairProfileCodexAppPath(await mustFindProfile(profileId));
-  assertIsolatedProfile(profile);
+  await assertIsolatedProfileStorage(profile);
+  const result = await preparation().prepare(profile, "launch");
+  if (result.status === "blocked") throw new Error(result.messages.map((message) => message.message).join("\n"));
+  const runtime = await inspectProfile(profile);
+  if (runtime.status === "running") return { pid: runtime.pid };
+  if (result.status === "deferred" || runtime.status === "unknown") {
+    throw new Error("Profile setup is pending because its runtime is unknown. Retry after closing the profile.");
+  }
   await ensureIsolatedProfileHome(profile);
   const log = await createLaunchLog(profile);
   const executablePath = codexExecutablePath(profile.paths.codexAppPath);
@@ -110,17 +199,23 @@ export async function openProfile(profileId: string): Promise<{ pid: number | nu
   const launcher = await generateLauncher(profile);
   const output = await openLaunchOutput(profile);
   const child = spawn(launcher.executablePath, [], detachedSpawnOptions(profile, executablePath, output.fd));
-  child.once("spawn", () => {
-    void log.append("desktop app process spawned", { pid: child.pid ?? null });
-  });
+  const key = profileKey(profileId);
+  launchedChildren.set(key, child);
   child.once("error", (error) => {
+    launchedChildren.delete(key);
     output.close();
     void log.append("desktop app process error", { message: error.message });
   });
   child.once("exit", (code, signal) => {
+    launchedChildren.delete(key);
     output.close();
     void log.append("desktop app process exited", { code, signal });
   });
+  await new Promise<void>((resolve, reject) => {
+    child.once("spawn", resolve);
+    child.once("error", reject);
+  });
+  await log.append("desktop app process spawned", { pid: child.pid ?? null });
   child.unref();
   await updateProfileLaunchMetadata(profile.id, child.pid ?? null);
   return { pid: child.pid ?? null };

@@ -15,10 +15,13 @@ import {
   createProfile,
   generateProfileLauncher,
   getProfileLauncherPath,
+  getPreparationResults,
   getRuntimeStatus,
   listProfiles,
   openProfile,
   permanentlyDeleteProfile,
+  previewProfileDefaults,
+  retryProfilePreparation,
   refreshActiveProfileLaunchers
 } from "./profile-service.js";
 import type { CreateProfileInput } from "../shared/types.js";
@@ -26,6 +29,9 @@ import type { CreateProfileInput } from "../shared/types.js";
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 let mainWindow: BrowserWindow | null = null;
 let pendingOpenProfileId = getOpenProfileArg(process.argv);
+
+let resolveProfilesReady: () => void;
+const profilesReady = new Promise<void>((resolve) => { resolveProfilesReady = resolve; });
 
 let resolveLinksReady: () => void;
 const linksReady = new Promise<void>((resolve) => { resolveLinksReady = resolve; });
@@ -102,14 +108,17 @@ function registerIpc(): void {
   ipcMain.handle("browser-links:enable", () => enableBrowserLinks());
   ipcMain.handle("profiles:list", () => listProfiles());
   ipcMain.handle("profiles:runtime", () => getRuntimeStatus());
-  ipcMain.handle("profiles:create", (_event, input: CreateProfileInput) => createProfile(input));
-  ipcMain.handle("profiles:delete-permanently", (_event, profileId: string) => permanentlyDeleteProfile(profileId));
-  ipcMain.handle("profiles:generate-launcher", (_event, profileId: string) => generateProfileLauncher(profileId));
+  ipcMain.handle("profiles:preparation", async () => { await profilesReady; return getPreparationResults(); });
+  ipcMain.handle("profiles:preview-defaults", async (_event, profileId: string) => { await profilesReady; return previewProfileDefaults(profileId); });
+  ipcMain.handle("profiles:retry-preparation", async (_event, profileId: string) => { await profilesReady; return retryProfilePreparation(profileId); });
+  ipcMain.handle("profiles:create", async (_event, input: CreateProfileInput) => { await profilesReady; return createProfile(input); });
+  ipcMain.handle("profiles:delete-permanently", async (_event, profileId: string) => { await profilesReady; return permanentlyDeleteProfile(profileId); });
+  ipcMain.handle("profiles:generate-launcher", async (_event, profileId: string) => { await profilesReady; return generateProfileLauncher(profileId); });
   ipcMain.handle("profiles:reveal-launcher", async (_event, profileId: string) => {
     shell.showItemInFolder(await getProfileLauncherPath(profileId));
     return { ok: true };
   });
-  ipcMain.handle("profiles:open", (_event, profileId: string) => openProfile(profileId));
+  ipcMain.handle("profiles:open", async (_event, profileId: string) => { await profilesReady; return openProfile(profileId); });
 }
 
 function enableBrowserLinks(): boolean {
@@ -186,6 +195,7 @@ function getOpenProfileArg(argv: string[]): string | null {
 
 async function openProfileFromArg(profileId: string): Promise<void> {
   try {
+    await profilesReady;
     await openProfile(profileId);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not open the personal profile.";
@@ -216,10 +226,10 @@ void app.whenReady().then(() => {
   for (const argument of process.argv) {
     if (argument.startsWith("codex://")) queueBrowserLink(argument);
   }
-  void refreshActiveProfileLaunchers().catch((error) => {
-    console.warn("[personal-launcher] Failed to refresh profile launchers", error);
-  });
   createWindow();
+  void refreshActiveProfileLaunchers().catch((error) => {
+    dialog.showErrorBox("Profile Setup Failed", error instanceof Error ? error.message : String(error));
+  }).finally(() => resolveProfilesReady());
   if (pendingOpenProfileId) {
     const profileId = pendingOpenProfileId;
     pendingOpenProfileId = null;

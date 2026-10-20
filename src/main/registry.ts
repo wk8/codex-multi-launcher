@@ -1,14 +1,13 @@
 import path from "node:path";
-import { ensureDir, pathExists, readJsonFile, writeJsonFile } from "./fs-utils.js";
+import { KeyedLock } from "./keyed-lock.js";
+import { ensureDir, pathExists, readJsonFile } from "./fs-utils.js";
+import { atomicWriteText } from "./settings-files.js";
 import { getAppPaths, launcherFileName, resolveCodexDesktopApp, slugifyProfileName } from "./paths.js";
 import type { CreateProfileInput, ManagedProfile, ProfileRegistry } from "../shared/types.js";
 
 export const DEFAULT_PROFILE_ICON_BACKGROUND_COLOR = "#34C759";
 
-const EMPTY_REGISTRY: ProfileRegistry = {
-  schemaVersion: 1,
-  profiles: []
-};
+const registryLock = new KeyedLock();
 
 export async function listProfiles(): Promise<ManagedProfile[]> {
   const registry = await loadRegistry();
@@ -22,6 +21,10 @@ export async function findProfile(profileId: string): Promise<ManagedProfile | n
 }
 
 export async function createProfileRecord(input: CreateProfileInput): Promise<ManagedProfile> {
+  return registryLock.run(getAppPaths().profilesFile, () => createRecord(input));
+}
+
+async function createRecord(input: CreateProfileInput): Promise<ManagedProfile> {
   const name = normalizeProfileName(input.name);
   const appPaths = getAppPaths();
   const registry = await loadRegistry();
@@ -80,6 +83,10 @@ export async function createProfileRecord(input: CreateProfileInput): Promise<Ma
 }
 
 export async function removeProfileRecord(profileId: string): Promise<ManagedProfile> {
+  return registryLock.run(getAppPaths().profilesFile, () => removeRecord(profileId));
+}
+
+async function removeRecord(profileId: string): Promise<ManagedProfile> {
   const registry = await loadRegistry();
   const profile = registry.profiles.find((item) => item.id === profileId);
   if (!profile) throw new Error(`Profile not found: ${profileId}`);
@@ -89,6 +96,10 @@ export async function removeProfileRecord(profileId: string): Promise<ManagedPro
 }
 
 export async function repairProfileCodexAppPath(profile: ManagedProfile): Promise<ManagedProfile> {
+  return registryLock.run(getAppPaths().profilesFile, () => repairAppPath(profile));
+}
+
+async function repairAppPath(profile: ManagedProfile): Promise<ManagedProfile> {
   const resolved = resolveCodexDesktopApp(profile.paths.codexAppPath);
   if (resolved.source !== "auto-detected" || resolved.appPath === profile.paths.codexAppPath) {
     return profile;
@@ -104,6 +115,10 @@ export async function repairProfileCodexAppPath(profile: ManagedProfile): Promis
 }
 
 export async function updateProfileLaunchMetadata(profileId: string, pid: number | null): Promise<void> {
+  return registryLock.run(getAppPaths().profilesFile, () => updateLaunchMetadata(profileId, pid));
+}
+
+async function updateLaunchMetadata(profileId: string, pid: number | null): Promise<void> {
   const registry = await loadRegistry();
   const profile = registry.profiles.find((item) => item.id === profileId);
   if (!profile) throw new Error(`Profile not found: ${profileId}`);
@@ -115,11 +130,13 @@ export async function updateProfileLaunchMetadata(profileId: string, pid: number
 }
 
 async function loadRegistry(): Promise<ProfileRegistry> {
-  return readJsonFile<ProfileRegistry>(getAppPaths().profilesFile, EMPTY_REGISTRY);
+  return readJsonFile<ProfileRegistry>(getAppPaths().profilesFile, { schemaVersion: 1, profiles: [] });
 }
 
 async function saveRegistry(registry: ProfileRegistry): Promise<void> {
-  await writeJsonFile(getAppPaths().profilesFile, registry);
+  const filePath = getAppPaths().profilesFile;
+  await ensureDir(path.dirname(filePath));
+  await atomicWriteText(filePath, JSON.stringify(registry, null, 2) + "\n");
 }
 
 async function profileTargetsExist(id: string): Promise<boolean> {
